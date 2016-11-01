@@ -304,11 +304,14 @@ public class ActionFactory {
 
                 /**
                  * Create ActionFeature_Value_Replace
+                 * As implied in DSL blocks, only works for replacing text, not other data types
                  */
             } else if (isThisClass(actionClassName, ActionFeature_Value_Replace.class)) {
                 if (propertyCheck(properties, OBJECT_FIND, OBJECT_REPLACE)) {
-                    Object find = createObject((HashMap) properties.get(OBJECT_FIND));
-                    Object replace = createObject((HashMap) properties.get(OBJECT_REPLACE));
+                    
+                    // the objects are already Strings, no need to cast
+                    Object find = properties.get(OBJECT_FIND);
+                    Object replace = properties.get(OBJECT_REPLACE);
                     return new ActionFeature_Value_Replace(find, replace);
 
                 } else {
