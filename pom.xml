@@ -8,7 +8,7 @@
     
     <properties>
         <project.build.sourceEncoding>windows-1252</project.build.sourceEncoding>
-        <geotools.version>14.1</geotools.version>
+        <geotools.version>17.0</geotools.version>
     </properties>
     
     <dependencies>
@@ -25,7 +25,7 @@
         <dependency>
             <groupId>${project.groupId}</groupId>
             <artifactId>datastorelinkerEntities</artifactId>
-            <version>4.2.5</version>
+            <version>4.2.6-SNAPSHOT</version>
         </dependency>
         <dependency>
             <groupId>${project.groupId}</groupId>
@@ -55,7 +55,7 @@
         </dependency>
         <dependency>
             <groupId>org.geotools</groupId>
-            <artifactId>gt-epsg-hsql</artifactId>
+            <artifactId>gt-epsg-wkt</artifactId>
             <version>${geotools.version}</version>
         </dependency>
         <dependency>
@@ -135,7 +135,7 @@
             <url>http://repo.b3p.nl/nexus/content/repositories/snapshots/</url>
         </snapshotRepository>
     </distributionManagement>
-    <build>        
+    <build>
         <plugins>            
             <plugin>                
                 <groupId>org.apache.maven.plugins</groupId>                
