@@ -2,14 +2,18 @@ package nl.b3p.geotools.data.linker;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.sql.*;
 import java.text.MessageFormat;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Properties;
 import java.util.ResourceBundle;
+import java.util.logging.Level;
+
 import nl.b3p.commons.jpa.JpaUtilServlet;
 import nl.b3p.datastorelinker.entity.Database;
 import nl.b3p.datastorelinker.util.Namespaces;
@@ -34,9 +38,15 @@ import org.geotools.feature.FeatureIterator;
 import org.geotools.jdbc.JDBCDataStore;
 import org.geotools.jdbc.JDBCFeatureStore;
 import org.geotools.jdbc.PrimaryKey;
+import org.geotools.referencing.CRS;
+import org.hibernate.Session;
 import org.jdom.Element;
 import org.jdom.input.DOMBuilder;
 import org.opengis.feature.simple.SimpleFeature;
+import org.opengis.geometry.BoundingBox;
+import org.opengis.geometry.Geometry;
+
+import javax.persistence.EntityManager;
 
 
 /**
@@ -69,12 +79,17 @@ public class DataStoreLinker implements Runnable {
     private static final int MAX_EXCEPTION_LOG_COUNT = 10;
     public static final String TYPE_ORACLE = "oracle";
     public static final String TYPE_POSTGIS = "postgis";
+    private boolean writingFromOtherToOracle;
+    private BoundingBox oracleBoundingBox;
+    private String oracleTableName;
+//    private static int srid;
 
     public synchronized Status getStatus() {
         return status;
     }
 
     public DataStoreLinker(nl.b3p.datastorelinker.entity.Process process) throws Exception {
+        // test comment
         init(process);
         dataStore2Read = openDataStore();
         actionList = createActionList();
@@ -127,6 +142,7 @@ public class DataStoreLinker implements Runnable {
 
     private void postInit() throws IOException {
         calculateSizes();
+        this.writingFromOtherToOracle = process.isFromOtherToOracle();
         log.info("dsl init complete.");
     }
 
@@ -219,7 +235,7 @@ public class DataStoreLinker implements Runnable {
                     status.incrementVisitedFeatures();
                     
                     continue;
-                }                
+                }
 
                 Map userData = feature.getUserData();
                 if (pk != null && userData != null) {
@@ -247,6 +263,9 @@ public class DataStoreLinker implements Runnable {
             
             log.info("Total of: " + status.getVisitedFeatures() + " features processed (" + typeName2Read + ")");
         } finally {
+            if (this.writingFromOtherToOracle) {
+                updateOracleExtents();
+            }
             iterator.close();
             JpaUtilServlet.closeThreadEntityManager();
         }
@@ -267,10 +286,15 @@ public class DataStoreLinker implements Runnable {
                 ef.repairGeometry();
             }
 
-            if (actionList.process(ef) != null) {
+            EasyFeature easyFeature = actionList.process(ef);
+
+            // update the oracle boundingBox if necessary
+            if (easyFeature != null && this.writingFromOtherToOracle){
+                addFeatureToOracleBoundingBox(easyFeature.getFeature());
+            }
                 // hier niet zetten, maar bij writer action
                 //status.incrementProcessedFeatures();
-            }
+
 
         } catch (IllegalStateException ex) {
             status.addWriteError(ex.getLocalizedMessage(), feature.getID());
@@ -639,4 +663,81 @@ public class DataStoreLinker implements Runnable {
         }
         return typenames;
     }
+
+    /**
+     * If copying from an non-oracle database to an oracle database, calculate the bounding box while iterating over
+     * features.
+     * @param simpleFeature The current feature.
+     */
+    private void addFeatureToOracleBoundingBox(SimpleFeature simpleFeature){
+
+        // first round initiate the bounding box
+        if (this.oracleBoundingBox == null){
+            this.oracleBoundingBox = simpleFeature.getBounds();
+            this.oracleTableName  = simpleFeature.getName().getLocalPart().toUpperCase();
+        }
+        // then just update
+        else {
+            this.oracleBoundingBox.include(simpleFeature.getBounds());
+        }
+    }
+
+    /**
+     * Update the oracle metadata table with the current extenst after iterating over all the features.
+     */
+    private void updateOracleExtents() {
+        if (this.writingFromOtherToOracle) {
+
+            // initiate parameters
+            DataStore dataStore = null;
+            JDBCDataStore jdbcDataStore = null;
+            Connection con = null;
+
+            // get the extents of the boundingBox of the features
+            double minX = this.oracleBoundingBox.getMinX();
+            double maxX = this.oracleBoundingBox.getMaxX();
+            double minY = this.oracleBoundingBox.getMinY();
+            double maxY = this.oracleBoundingBox.getMaxY();
+
+            // calculate the tolerances the same way org.geotools.data.oracle.OracleDialect does
+            double toleranceX = (maxX - minX) / 10000000;
+            double toleranceY = (maxY - minY) / 10000000;
+
+            // create the string with the dimensional info
+            String dimensionalInfoString = "MDSYS.SDO_DIM_ARRAY( MDSYS.SDO_DIM_ELEMENT('X', " + minX + ", " + maxX + "," +
+                    " " + toleranceX + "),MDSYS.SDO_DIM_ELEMENT('Y'," + minY + ", " + maxY + ", " + toleranceY + "))";
+
+
+            // combine the dimensional string with the update string
+            String sqlUpdateString = "UPDATE USER_SDO_GEOM_METADATA SET DIMINFO = " +
+                    dimensionalInfoString + " WHERE TABLE_NAME='" + this.oracleTableName + "'";
+
+            // get the parameters from the database output
+            Map parameters = process.getOutput().getDatabase().toGeotoolsDataStoreParametersMap();
+            // but change schema because updating metadata
+            parameters.put("schema", "MDSYS");
+
+            try {
+                dataStore = openDataStore(parameters);
+                jdbcDataStore = (JDBCDataStore) dataStore;
+                con = jdbcDataStore.getDataSource().getConnection();
+                con.setAutoCommit(true);
+
+                PreparedStatement ps = con.prepareStatement(sqlUpdateString);
+                ps.execute();
+
+            } catch (Exception ex) {
+                log.error(ex);
+
+            } finally {
+                if (jdbcDataStore != null) {
+                    jdbcDataStore.closeSafe(con);
+                    dataStore.dispose();
+
+                }
+            }
+
+        }
+    }
+
 }
