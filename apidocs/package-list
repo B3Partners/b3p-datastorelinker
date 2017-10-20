@@ -1,0 +1,6 @@
+com.vividsolutions.jts.operation.polygonize
+nl.b3p.geotools.data.linker
+nl.b3p.geotools.data.linker.blocks
+nl.b3p.geotools.data.linker.feature
+nl.b3p.geotools.data.linker.poi
+nl.b3p.geotools.data.linker.util
